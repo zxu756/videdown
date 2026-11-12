@@ -148,7 +148,7 @@ async function openFile(item: HistoryRecord) {
 }
 
 async function openFolder(item: HistoryRecord) {
-  const path = item.filePath.substring(0, item.filePath.lastIndexOf('\\'))
+  const path = item.filePath.substring(0, Math.max(item.filePath.lastIndexOf('\\'), item.filePath.lastIndexOf('/')))
   await window.electronAPI.shell.openPath(path)
 }
 

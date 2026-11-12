@@ -22,6 +22,9 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
 
 // 暴露 API 给渲染进程
 contextBridge.exposeInMainWorld('electronAPI', {
+  // 运行平台：darwin / win32 / linux
+  platform: process.platform,
+
   // 剪贴板
   clipboard: {
     readText: () => ipcRenderer.invoke('clipboard:readText'),

@@ -1,11 +1,10 @@
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  font-family: 'Inter', 'Noto Sans SC', system-ui, sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', system-ui, sans-serif;
   line-height: 1.5;
   font-weight: 400;
   color-scheme: light;
@@ -22,7 +21,7 @@ body {
   min-height: 100vh;
   background-color: #fff8f4;
   color: #3b3125;
-  font-family: 'Inter', 'Noto Sans SC', sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
 }
 
 #app {
@@ -32,11 +31,11 @@ body {
 }
 
 .font-headline {
-  font-family: 'Plus Jakarta Sans', 'Noto Sans SC', sans-serif;
+  font-family: 'Plus Jakarta Sans', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
 }
 
 .font-body {
-  font-family: 'Inter', 'Noto Sans SC', sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
 }
 
 .font-mono {
@@ -145,4 +144,23 @@ body {
   direction: ltr;
   -webkit-font-feature-settings: 'liga';
   -webkit-font-smoothing: antialiased;
+}
+
+/* 窗口拖动：隐藏系统标题栏后，由顶部 header 充当标题栏 */
+.app-drag {
+  -webkit-app-region: drag;
+}
+
+.app-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* macOS 红绿灯按钮在左上角，header 左侧留出位置 */
+html.platform-darwin .app-titlebar {
+  padding-left: 84px;
+}
+
+/* 图片不能被拖出窗口 */
+img {
+  -webkit-user-drag: none;
 }

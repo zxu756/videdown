@@ -56,5 +56,6 @@ interface Window {
     }>
     // 菜单事件监听
     onMenuShowAbout: (callback: () => void) => () => void
+    platform: string
   }
 }

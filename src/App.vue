@@ -1,8 +1,5 @@
 <template>
   <div class="relative flex w-full flex-col h-screen bg-surface">
-    <!-- Google Fonts -->
-    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
-    
     <!-- Header -->
     <Header :current-tab="currentTab" @change-tab="changeTab" />
     
@@ -32,6 +29,29 @@ function changeTab(tab: TabType) {
   // 通知子组件标签已切换
   window.dispatchEvent(new CustomEvent('tab-changed', { detail: tab }))
 }
+
+// 把链接拖进窗口：默认行为会让整个窗口跳转到该网页，改为填入链接输入框
+function onDragOver(e: DragEvent) {
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+}
+
+function onDrop(e: DragEvent) {
+  const target = e.target as HTMLElement | null
+  // 拖到输入框里时保留浏览器原生的插入文本行为
+  if (target && (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT')) return
+  e.preventDefault()
+  const dt = e.dataTransfer
+  if (!dt) return
+  const uriList = dt.getData('text/uri-list').split('\n').map(s => s.trim()).filter(s => s && !s.startsWith('#'))
+  const text = (uriList[0] || dt.getData('text/plain') || '').trim()
+  if (!text) return
+  currentTab.value = 'download'
+  window.dispatchEvent(new CustomEvent('url-dropped', { detail: text }))
+}
+
+window.addEventListener('dragover', onDragOver)
+window.addEventListener('drop', onDrop)
 
 // 监听跳转设置页事件
 window.addEventListener('navigate-to-settings', () => {

@@ -195,8 +195,8 @@
               </div>
             </div>
             
-            <!-- YouTube Audio Formats -->
-            <div v-if="videoInfo.isYoutube === true && videoInfo.audioFormats?.length" class="flex flex-col gap-2">
+            <!-- 纯音频格式（所有平台；无独立音频流的平台显示「从视频提取 MP3」） -->
+            <div v-if="videoInfo.audioFormats?.length" class="flex flex-col gap-2">
               <span class="text-[11px] font-bold text-outline uppercase tracking-wider">纯音频格式 - 共 {{ videoInfo.audioFormats.length }} 个</span>
               <div class="grid grid-cols-2 gap-2">
                 <label 
@@ -617,12 +617,23 @@ async function handleContextMenuAction(action: string) {
 }
 
 // Click outside to close context menu
+// 链接被拖进窗口（见 App.vue）：填入输入框
+function onUrlDropped(e: Event) {
+  const text = (e as CustomEvent<string>).detail
+  if (text) {
+    url.value = text
+    urlInput.value?.focus()
+  }
+}
+
 onMounted(() => {
   document.addEventListener('click', hideContextMenu)
+  window.addEventListener('url-dropped', onUrlDropped)
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', hideContextMenu)
+  window.removeEventListener('url-dropped', onUrlDropped)
 })
 
 // Download Tasks
@@ -785,9 +796,9 @@ async function parseVideo() {
     } else if (errorMsg.includes('network') || errorMsg.includes('timeout')) {
       errorMsg = '网络连接超时，请检查网络后重试'
     } else if (errorMsg.includes('ffmpeg') || errorMsg.includes('FFmpeg')) {
-      errorMsg = 'FFmpeg 未找到，请确保 ffmpeg.exe 存在于程序目录'
+      errorMsg = 'FFmpeg 未找到，请确保 ffmpeg 存在于程序目录'
     } else if (errorMsg.toLowerCase().includes('yt-dlp') && (errorMsg.includes('not found') || errorMsg.includes('未找到') || errorMsg.includes('cannot find') || errorMsg.includes('enoent'))) {
-      errorMsg = 'yt-dlp 未找到，请确保 yt-dlp.exe 存在于程序目录'
+      errorMsg = 'yt-dlp 未找到，请确保 yt-dlp 存在于程序目录'
     } else if (!errorMsg || errorMsg === '解析失败') {
       errorMsg = '无法解析该链接，请检查链接是否正确或尝试其他视频'
     }
@@ -955,7 +966,11 @@ async function processDownload(task: DownloadTask) {
       outputDir: task.outputDir,
       taskId: task.id,
       directUrl: useDirectDownload && directUrl ? directUrl : undefined,
-      filename: useDirectDownload && directUrl ? `${sanitizeFilename(task.videoInfo.title).slice(0, 50)}_${task.selectedFormat.quality}.mp4` : undefined,
+      filename: useDirectDownload && directUrl
+        ? ((task as any).downloadMode === 'audio'
+            ? `${sanitizeFilename(task.videoInfo.title).slice(0, 50)}.mp3`
+            : `${sanitizeFilename(task.videoInfo.title).slice(0, 50)}_${task.selectedFormat.quality}.mp4`)
+        : undefined,
       cookiesFile: cookiesFile,
       filenameTemplate: filenameTemplate,
     }
@@ -1004,7 +1019,7 @@ async function processDownload(task: DownloadTask) {
     } else if (errorMsg.includes('network') || errorMsg.includes('timeout') || errorMsg.includes('ECONNRESET')) {
       errorMsg = '网络连接中断，请检查网络后重试'
     } else if (errorMsg.includes('ffmpeg') || errorMsg.includes('FFmpeg')) {
-      errorMsg = 'FFmpeg 合并失败，请确保 ffmpeg.exe 存在于程序目录'
+      errorMsg = 'FFmpeg 合并失败，请确保 ffmpeg 存在于程序目录'
     } else if (errorMsg.includes('cancel') || errorMsg.includes('abort')) {
       errorMsg = '下载已取消'
     }

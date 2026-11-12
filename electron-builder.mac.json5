@@ -1,0 +1,33 @@
+// macOS 打包配置：pnpm run build:mac（或 npm run build:mac）
+// 需要先把 macOS 版 yt-dlp 和 ffmpeg 放到 vendor/mac/（见 README-macOS.md）
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+  "appId": "com.videdown.app",
+  "productName": "Videdown",
+  "asar": true,
+  "directories": {
+    "output": "release/${version}-mac"
+  },
+  "files": ["dist/**/*", "dist-electron/**/*"],
+  "extraResources": [
+    { "from": "./vendor/mac/yt-dlp", "to": "./yt-dlp" },
+    { "from": "./vendor/mac/ffmpeg", "to": "./ffmpeg" },
+    { "from": "./vendor/mac/ffprobe", "to": "./ffprobe" }
+  ],
+  "npmRebuild": false,
+  "mac": {
+    "target": [
+      { "target": "dmg", "arch": ["arm64"] },
+      { "target": "zip", "arch": ["arm64"] }
+    ],
+    "icon": "build/icon.icns",
+    "category": "public.app-category.utilities",
+    "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
+    // 没有 Apple 开发者证书：ad-hoc 签名，首次打开需右键→打开
+    "identity": null,
+    "hardenedRuntime": false
+  },
+  "dmg": {
+    "title": "Videdown ${version}"
+  }
+}

@@ -8,11 +8,15 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc && vite build && electron-builder",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:mac": "vue-tsc && vite build && electron-builder --mac --config electron-builder.mac.json5 --publish never"
   },
   "dependencies": {
+    "@fontsource/inter": "^5.1.0",
+    "@fontsource/plus-jakarta-sans": "^5.1.0",
     "bufferutil": "^4.1.0",
     "electron-updater": "^6.8.3",
+    "material-symbols": "^0.27.0",
     "puppeteer-core": "^24.40.0",
     "utf-8-validate": "^6.0.6",
     "vue": "^3.4.21"

@@ -1,5 +1,5 @@
 <template>
-  <header class="flex items-center justify-between whitespace-nowrap bg-surface-container-low px-6 py-3 select-none">
+  <header class="app-drag app-titlebar flex items-center justify-between whitespace-nowrap bg-surface-container-low px-6 py-3 select-none">
     <!-- Logo -->
     <div class="flex items-center gap-3 text-on-surface">
       <div class="size-5 text-primary">
@@ -12,7 +12,7 @@
     
     <!-- Navigation -->
     <div class="flex flex-1 justify-end gap-6">
-      <nav class="flex items-center gap-6">
+      <nav class="app-no-drag flex items-center gap-6">
         <div 
           v-for="tab in tabs" 
           :key="tab.key"
@@ -35,7 +35,7 @@
       <!-- Settings Button -->
       <button 
         aria-label="Settings" 
-        class="flex items-center justify-center rounded-md size-8 bg-surface-container-highest text-on-surface hover:bg-surface-variant transition-colors"
+        class="app-no-drag flex items-center justify-center rounded-md size-8 bg-surface-container-highest text-on-surface hover:bg-surface-variant transition-colors"
         @click="$emit('change-tab', 'settings')"
       >
         <MaterialIcon name="settings" :size="18" />

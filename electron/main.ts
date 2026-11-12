@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, Menu } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { spawn } from 'node:child_process'
+import { spawn, exec } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import puppeteer from 'puppeteer-core'
@@ -9,6 +9,34 @@ import puppeteer from 'puppeteer-core'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 process.env.APP_ROOT = path.join(__dirname, '..')
+
+const IS_WIN = process.platform === 'win32'
+const IS_MAC = process.platform === 'darwin'
+
+// macOS 从 Finder 启动的 GUI 应用不继承 shell 的 PATH，补上 Homebrew 等常见目录
+if (!IS_WIN) {
+  const extra = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', path.join(os.homedir(), '.deno', 'bin')]
+  const current = (process.env.PATH || '').split(':').filter(Boolean)
+  process.env.PATH = [...current, ...extra.filter(p => !current.includes(p))].join(':')
+}
+
+// 平台相关的可执行文件名：Windows 加 .exe
+function exeName(name: string): string {
+  return IS_WIN ? `${name}.exe` : name
+}
+
+// 在 PATH 中查找可执行文件，返回绝对路径
+function findInPath(name: string): string | null {
+  for (const dir of (process.env.PATH || '').split(path.delimiter)) {
+    if (!dir) continue
+    const p = path.join(dir, name)
+    try {
+      if (fs.existsSync(p) && fs.statSync(p).isFile()) return p
+    } catch {
+    }
+  }
+  return null
+}
 
 export const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
 export const MAIN_DIST = path.join(process.env.APP_ROOT, 'dist-electron')
@@ -20,18 +48,19 @@ let win: BrowserWindow | null
 
 // 获取 yt-dlp 路径
 function getYtDlpPath(): string {
+  const ytdlpName = exeName('yt-dlp')
   const possiblePaths = [
-    path.join(process.env.APP_ROOT, 'yt-dlp.exe'),
-    path.join(process.resourcesPath || '', 'yt-dlp.exe'),
-    path.join(__dirname, '..', '..', 'yt-dlp.exe'),
+    path.join(process.env.APP_ROOT || '', ytdlpName),
+    path.join(process.resourcesPath || '', ytdlpName),
+    path.join(__dirname, '..', '..', ytdlpName),
   ]
-  
+
   for (const p of possiblePaths) {
     if (fs.existsSync(p)) {
       return p
     }
   }
-  return 'yt-dlp.exe'
+  return findInPath(ytdlpName) || ytdlpName
 }
 
 // 获取 ffmpeg 路径（跨平台）
@@ -63,7 +92,7 @@ function getFfmpegPath(): string {
   }
   
   // 默认返回 ffmpeg，依赖系统 PATH
-  return ffmpegName
+  return findInPath(ffmpegName) || ffmpegName
 }
 
 // 检查 JS 运行时是否可用
@@ -74,7 +103,8 @@ function checkJsRuntime(): { available: boolean; path: string | null; name: stri
   // 1. 首先尝试 Node.js
   const nodeName = isWin ? 'node.exe' : 'node'
   const nodePaths = [
-    nodeName,
+    findInPath(nodeName) || '',
+    isWin ? '' : '/opt/homebrew/bin/node',
     isWin ? 'C:\\Program Files\\nodejs\\node.exe' : '/usr/bin/node',
     isWin ? 'C:\\Program Files (x86)\\nodejs\\node.exe' : '/usr/local/bin/node',
     isWin ? 'D:\\NodeJs\\node.exe' : '',
@@ -93,7 +123,7 @@ function checkJsRuntime(): { available: boolean; path: string | null; name: stri
   // 2. 尝试 Deno
   const denoName = isWin ? 'deno.exe' : 'deno'
   const denoPaths = [
-    denoName,
+    findInPath(denoName) || '',
     path.join(process.env.APP_ROOT || '', denoName),
     path.join(process.resourcesPath || '', denoName),
     path.join(__dirname, '..', '..', denoName),
@@ -118,7 +148,9 @@ async function promptNodeDownload(): Promise<void> {
     type: 'info',
     title: '需要 Node.js 运行时',
     message: 'YouTube 视频解析需要 Node.js 运行时',
-    detail: '点击"确定"将跳转到 Node.js 下载页面，请下载 Windows Installer (.msi) 版本并安装后重试。',
+    detail: IS_MAC
+      ? '点击"确定"将跳转到 Node.js 下载页面，请下载 macOS Installer (.pkg) 安装，或执行 brew install node 后重试。'
+      : '点击"确定"将跳转到 Node.js 下载页面，请下载 Windows Installer (.msi) 版本并安装后重试。',
     buttons: ['确定', '取消'],
     defaultId: 0,
   })
@@ -215,12 +247,56 @@ function createWindow() {
     win?.webContents.send('main-process-message', (new Date).toLocaleString())
   })
 
+  // 不允许主窗口跳转到别的网页（比如把链接拖进窗口时），外部链接交给系统浏览器
+  win.webContents.on('will-navigate', (event, targetUrl) => {
+    if (targetUrl !== win?.webContents.getURL()) {
+      event.preventDefault()
+    }
+  })
+  win.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
+    if (/^https?:\/\//i.test(targetUrl)) shell.openExternal(targetUrl)
+    return { action: 'deny' }
+  })
+
+  // 输入框右键菜单：Electron 默认没有任何右键菜单
+  win.webContents.on('context-menu', (_event, params) => {
+    const items: Electron.MenuItemConstructorOptions[] = []
+    if (params.isEditable) {
+      items.push(
+        { label: '撤销', role: 'undo', enabled: params.editFlags.canUndo },
+        { label: '重做', role: 'redo', enabled: params.editFlags.canRedo },
+        { type: 'separator' },
+        { label: '剪切', role: 'cut', enabled: params.editFlags.canCut },
+        { label: '复制', role: 'copy', enabled: params.editFlags.canCopy },
+        { label: '粘贴', role: 'paste', enabled: params.editFlags.canPaste },
+        { type: 'separator' },
+        { label: '全选', role: 'selectAll' },
+      )
+    } else if (params.selectionText.trim()) {
+      items.push({ label: '复制', role: 'copy' })
+    }
+    if (items.length && win) Menu.buildFromTemplate(items).popup({ window: win })
+  })
+
+  // macOS：点关闭按钮/Cmd+W 只隐藏窗口，下载任务和界面状态都保留，点 Dock 图标再显示
+  win.on('close', (event) => {
+    if (IS_MAC && !isQuitting) {
+      event.preventDefault()
+      win?.hide()
+    }
+  })
+
   if (VITE_DEV_SERVER_URL) {
     win.loadURL(VITE_DEV_SERVER_URL)
   } else {
     win.loadFile(path.join(RENDERER_DIST, 'index.html'))
   }
 }
+
+let isQuitting = false
+app.on('before-quit', () => {
+  isQuitting = true
+})
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
@@ -230,7 +306,9 @@ app.on('window-all-closed', () => {
 })
 
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
+  if (win && !win.isDestroyed()) {
+    win.show()
+  } else if (BrowserWindow.getAllWindows().length === 0) {
     createWindow()
   }
 })
@@ -241,48 +319,96 @@ app.whenReady().then(() => {
 })
 
 // 创建自定义菜单
+const APP_NAME = 'Videdown'
+
 function createMenu() {
-  const template: Electron.MenuItemConstructorOptions[] = [
-    {
-      label: '文件',
-      submenu: [
+  const showAbout = () => {
+    win?.show()
+    // 发送消息到渲染进程，切换到关于页面
+    win?.webContents.send('menu:showAbout')
+  }
+
+  // 编辑菜单：macOS 上 Cmd+C/V/X/A/Z 依赖这些菜单项，没有它们输入框里无法复制粘贴
+  const editMenu: Electron.MenuItemConstructorOptions = {
+    label: '编辑',
+    submenu: [
+      { label: '撤销', role: 'undo' },
+      { label: '重做', role: 'redo' },
+      { type: 'separator' },
+      { label: '剪切', role: 'cut' },
+      { label: '复制', role: 'copy' },
+      { label: '粘贴', role: 'paste' },
+      { label: '全选', role: 'selectAll' },
+    ]
+  }
+
+  const viewMenu: Electron.MenuItemConstructorOptions = {
+    label: '视图',
+    submenu: [
+      // 不提供 Cmd+R 重新加载：误按会清空界面上的下载任务列表
+      { label: '实际大小', role: 'resetZoom' },
+      { label: '放大', role: 'zoomIn' },
+      { label: '缩小', role: 'zoomOut' },
+      { type: 'separator' },
+      { label: '全屏', role: 'togglefullscreen' },
+    ]
+  }
+
+  const template: Electron.MenuItemConstructorOptions[] = IS_MAC
+    ? [
+        // macOS 第一个菜单固定是应用菜单（显示为应用名）
         {
-          label: '退出',
-          accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
-          click: () => {
-            app.quit()
-          }
-        }
-      ]
-    },
-    {
-      label: '窗口',
-      submenu: [
+          label: APP_NAME,
+          submenu: [
+            { label: `关于 ${APP_NAME}`, click: showAbout },
+            { type: 'separator' },
+            { label: '服务', role: 'services' },
+            { type: 'separator' },
+            { label: `隐藏 ${APP_NAME}`, role: 'hide' },
+            { label: '隐藏其他', role: 'hideOthers' },
+            { label: '全部显示', role: 'unhide' },
+            { type: 'separator' },
+            { label: `退出 ${APP_NAME}`, role: 'quit' },
+          ]
+        },
+        editMenu,
+        viewMenu,
         {
-          label: '最小化',
-          accelerator: 'CmdOrCtrl+M',
-          role: 'minimize'
+          label: '窗口',
+          role: 'windowMenu',
+          submenu: [
+            { label: '最小化', role: 'minimize' },
+            { label: '缩放', role: 'zoom' },
+            { label: '关闭', role: 'close' },
+            { type: 'separator' },
+            { label: '前置全部窗口', role: 'front' },
+          ]
         },
         {
-          label: '关闭',
-          accelerator: 'CmdOrCtrl+W',
-          role: 'close'
-        }
+          label: '帮助',
+          role: 'help',
+          submenu: [{ label: '关于', click: showAbout }]
+        },
       ]
-    },
-    {
-      label: '帮助',
-      submenu: [
+    : [
         {
-          label: '关于',
-          click: () => {
-            // 发送消息到渲染进程，切换到关于页面
-            win?.webContents.send('menu:showAbout')
-          }
-        }
+          label: '文件',
+          submenu: [{ label: '退出', accelerator: 'Ctrl+Q', role: 'quit' }]
+        },
+        editMenu,
+        viewMenu,
+        {
+          label: '窗口',
+          submenu: [
+            { label: '最小化', role: 'minimize' },
+            { label: '关闭', role: 'close' },
+          ]
+        },
+        {
+          label: '帮助',
+          submenu: [{ label: '关于', click: showAbout }]
+        },
       ]
-    }
-  ]
 
   const menu = Menu.buildFromTemplate(template)
   Menu.setApplicationMenu(menu)
@@ -573,52 +699,78 @@ async function parseDouyinWithAPI(url: string): Promise<any> {
 }
 
 // 获取 Chromium 路径
+function chromeCandidates(): string[] {
+  if (IS_MAC) {
+    return [
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      path.join(os.homedir(), 'Applications', 'Google Chrome.app', 'Contents', 'MacOS', 'Google Chrome'),
+    ]
+  }
+  if (IS_WIN) {
+    return [
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+      path.join(os.homedir(), 'AppData', 'Local', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    ]
+  }
+  return ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser']
+}
+
+function edgeCandidates(): string[] {
+  if (IS_MAC) {
+    return [
+      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+      path.join(os.homedir(), 'Applications', 'Microsoft Edge.app', 'Contents', 'MacOS', 'Microsoft Edge'),
+    ]
+  }
+  if (IS_WIN) {
+    return [
+      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+      'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+      path.join(os.homedir(), 'AppData', 'Local', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+    ]
+  }
+  return ['/usr/bin/microsoft-edge']
+}
+
 function getChromiumPath(): string | null {
-  // 1. 优先使用系统 Chrome
-  const chromePaths = [
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-    path.join(os.homedir(), 'AppData', 'Local', 'Google', 'Chrome', 'Application', 'chrome.exe'),
-  ]
-  for (const p of chromePaths) {
+  // 1. 优先使用系统 Chrome，2. 其次 Edge
+  for (const p of [...chromeCandidates(), ...edgeCandidates()]) {
     if (fs.existsSync(p)) return p
   }
-
-  // 2. 使用系统 Edge（Windows 10/11 预装）
-  const edgePaths = [
-    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
-    path.join(os.homedir(), 'AppData', 'Local', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-  ]
-  for (const p of edgePaths) {
-    if (fs.existsSync(p)) return p
-  }
-
   return null
 }
 
 // 获取可用的浏览器名称（用于 yt-dlp --cookies-from-browser）
+// 浏览器装了但从没打开过时没有 cookies 数据库，yt-dlp 会直接报错，所以要确认数据库存在
+function hasCookieDb(userDataDir: string): boolean {
+  try {
+    if (!fs.existsSync(userDataDir)) return false
+    const profiles = fs.readdirSync(userDataDir).filter(n => n === 'Default' || n.startsWith('Profile '))
+    return profiles.some(p =>
+      fs.existsSync(path.join(userDataDir, p, 'Cookies')) ||
+      fs.existsSync(path.join(userDataDir, p, 'Network', 'Cookies')))
+  } catch {
+    return false
+  }
+}
+
+function browserUserDataDir(browser: 'chrome' | 'edge'): string {
+  const home = os.homedir()
+  if (IS_MAC) {
+    return path.join(home, 'Library', 'Application Support', browser === 'chrome' ? 'Google/Chrome' : 'Microsoft Edge')
+  }
+  if (IS_WIN) {
+    const local = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local')
+    return path.join(local, browser === 'chrome' ? 'Google\\Chrome' : 'Microsoft\\Edge', 'User Data')
+  }
+  return path.join(home, '.config', browser === 'chrome' ? 'google-chrome' : 'microsoft-edge')
+}
+
 function getAvailableBrowser(): string {
-  // 优先检查 Chrome
-  const chromePaths = [
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-    path.join(os.homedir(), 'AppData', 'Local', 'Google', 'Chrome', 'Application', 'chrome.exe'),
-  ]
-  for (const p of chromePaths) {
-    if (fs.existsSync(p)) return 'chrome'
-  }
-
-  // 然后检查 Edge
-  const edgePaths = [
-    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
-    path.join(os.homedir(), 'AppData', 'Local', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-  ]
-  for (const p of edgePaths) {
-    if (fs.existsSync(p)) return 'edge'
-  }
-
+  if (chromeCandidates().some(p => fs.existsSync(p)) && hasCookieDb(browserUserDataDir('chrome'))) return 'chrome'
+  if (edgeCandidates().some(p => fs.existsSync(p)) && hasCookieDb(browserUserDataDir('edge'))) return 'edge'
+  // Safari 的 cookies 需要“完全磁盘访问权限”才能读，不作为默认选项
   return ''
 }
 
@@ -650,7 +802,9 @@ async function parseDouyinWithPuppeteer(url: string): Promise<any> {
     const page = await browser.newPage()
 
     // 设置 User-Agent
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+    // UA 必须和真实浏览器一致：写死 Windows UA 在 macOS 上会和 navigator.platform 等指纹矛盾，
+    // 抖音风控（Argus）会直接拒绝。用 Chrome 自己的 UA，只去掉 Headless 标记
+    await page.setUserAgent((await browser.userAgent()).replace('HeadlessChrome', 'Chrome'))
 
     // 设置视口
     await page.setViewport({ width: 1920, height: 1080 })
@@ -1147,7 +1301,9 @@ async function parseKuaishouWithPuppeteer(url: string): Promise<any> {
     const page = await browser.newPage()
 
     // 设置 User-Agent
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+    // UA 必须和真实浏览器一致：写死 Windows UA 在 macOS 上会和 navigator.platform 等指纹矛盾，
+    // 抖音风控（Argus）会直接拒绝。用 Chrome 自己的 UA，只去掉 Headless 标记
+    await page.setUserAgent((await browser.userAgent()).replace('HeadlessChrome', 'Chrome'))
 
     // 设置视口
     await page.setViewport({ width: 1920, height: 1080 })
@@ -1867,7 +2023,7 @@ async function parseKuaishouWithPuppeteer(url: string): Promise<any> {
 }
 
 // 解析视频信息
-ipcMain.handle('ytdlp:parse', async (_event, ...args) => {
+async function parseVideoImpl(...args: any[]): Promise<any> {
   const url = args[0] as string
   const cookiesFile = args[1] as string | undefined
   // 如果是抖音链接，优先使用 API 解析
@@ -1875,9 +2031,11 @@ ipcMain.handle('ytdlp:parse', async (_event, ...args) => {
     try {
       return await parseDouyinWithAPI(url)
     } catch (e: any) {
+      console.error('[douyin] API 解析失败:', e?.message)
       try {
         return await parseDouyinWithPuppeteer(url)
       } catch (e2: any) {
+        console.error('[douyin] 浏览器解析失败:', e2?.message)
       }
     }
   }
@@ -1887,10 +2045,12 @@ ipcMain.handle('ytdlp:parse', async (_event, ...args) => {
       const result = await parseKuaishouWithAPI(url)
       return result
     } catch (e: any) {
+      console.error('[kuaishou] API 解析失败:', e?.message)
       try {
         const result = await parseKuaishouWithPuppeteer(url)
         return result
       } catch (e2: any) {
+        console.error('[kuaishou] 浏览器解析失败:', e2?.message)
       }
     }
   }
@@ -1972,7 +2132,9 @@ ipcMain.handle('ytdlp:parse', async (_event, ...args) => {
       }
       
       try {
-        const info = JSON.parse(output)
+        // 多视频帖子（如 Instagram 多图/多视频）yt-dlp 会每个条目输出一行 JSON，取第一个
+        const firstJson = output.split('\n').map((l: string) => l.trim()).find((l: string) => l.startsWith('{')) || output
+        const info = JSON.parse(firstJson)
 
         // 返回所有视频格式（B站/Instagram可能音视频分离，yt-dlp会自动合并）
         let formats = (info.formats || [])
@@ -2139,7 +2301,7 @@ ipcMain.handle('ytdlp:parse', async (_event, ...args) => {
         })
         
         // 提取纯音频格式（去重，只保留不同码率的）
-        const audioFormats = isYoutube && info.formats ? info.formats
+        const audioFormats = info.formats ? info.formats
           .filter((f: any) => {
             const isAudioOnly = f.vcodec === 'none' && f.acodec && f.acodec !== 'none'
             return isAudioOnly
@@ -2182,9 +2344,48 @@ ipcMain.handle('ytdlp:parse', async (_event, ...args) => {
       }
     })
   })
-})
+}
+
+// 每个平台都提供纯音频选项：
+// - yt-dlp 解析出了独立音频流（YouTube / B站 等）→ 直接列出这些音频格式
+// - 没有独立音频流（抖音 / 快手 / 小红书 / Instagram 等音画合一）→ 提供「从视频提取 MP3」
+function withAudioOption(info: any): any {
+  if (!info || (info.audioFormats && info.audioFormats.length > 0)) return info
+  const best = (info.formats || [])[0]
+  return {
+    ...info,
+    audioFormats: [{
+      formatId: 'extract',
+      quality: 'MP3（从视频提取）',
+      ext: 'mp3',
+      filesize: 0,
+      abr: 0,
+      acodec: 'mp3',
+      // 直链平台（抖音/快手）下载时需要视频直链
+      url: best?.url,
+    }],
+  }
+}
+
+// 解析视频信息
+ipcMain.handle('ytdlp:parse', async (_event, ...args) => withAudioOption(await parseVideoImpl(...args)))
 
 // 直接下载文件（用于抖音等直接URL）
+// 用 ffmpeg 从视频文件中提取音频，转成最高质量 VBR mp3
+function extractAudioToMp3(input: string, output: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(getFfmpegPath(), ['-y', '-i', input, '-vn', '-c:a', 'libmp3lame', '-q:a', '0', output])
+    let err = ''
+    child.stderr.on('data', d => { err = (err + d.toString()).slice(-2000) })
+    child.on('error', reject)
+    child.on('close', code => {
+      if (code === 0) resolve()
+      else if (/does not contain any stream|matches no streams/.test(err)) reject(new Error('这个视频没有声音（没有音轨），无法提取音频'))
+      else reject(new Error('提取音频失败: ' + (err.trim().split('\n').pop() || `ffmpeg 退出码 ${code}`)))
+    })
+  })
+}
+
 async function downloadDirectFile(url: string, outputPath: string, taskId: string): Promise<void> {
   return new Promise(async (resolve, reject) => {
     try {
@@ -2308,6 +2509,20 @@ ipcMain.handle('ytdlp:download', async (_event, options: {
       const outputPath = path.join(outputDir, filename)
 
       try {
+        if (options.downloadMode === 'audio') {
+          // 纯音频：先下视频到临时文件，再用 ffmpeg 提取成 mp3
+          const mp3Path = outputPath.replace(/\.[^.\/]+$/, '') + '.mp3'
+          const tmpVideo = mp3Path + '.video.tmp'
+          try {
+            await downloadDirectFile(options.directUrl, tmpVideo, options.taskId)
+            sendDownloadProgress({ taskId: options.taskId, url: options.url, percent: 99, status: 'merging', message: '正在提取音频...' })
+            await extractAudioToMp3(tmpVideo, mp3Path)
+          } finally {
+            fs.rmSync(tmpVideo, { force: true })
+          }
+          resolve({ filePath: mp3Path })
+          return
+        }
         await downloadDirectFile(options.directUrl, outputPath, options.taskId)
         resolve({ filePath: outputPath })
         return
@@ -2320,7 +2535,8 @@ ipcMain.handle('ytdlp:download', async (_event, options: {
     const isYoutube = options.url.includes('youtube.com') || options.url.includes('youtu.be')
     const isBilibili = options.url.includes('bilibili.com') || options.url.includes('b23.tv')
 
-    const userTemplate = options.filenameTemplate || '%(title)s'
+    // 设置页默认模板是 '%(title)s.%(ext)s'，下面还会再拼 '.%(ext)s'，先去掉避免出现 xxx.m4a.mp3 / xxx.mp4.mp4
+    const userTemplate = (options.filenameTemplate || '%(title)s').replace(/\.%\(ext\)s$/, '') || '%(title)s'
     const outputTemplate = path.join(outputDir, `${userTemplate}.%(ext)s`)
 
     // 判断下载模式
@@ -2332,7 +2548,8 @@ ipcMain.handle('ytdlp:download', async (_event, options: {
     if (isSubtitleOnly) {
       formatSelector = 'best'
     } else if (isAudioOnly) {
-      formatSelector = options.formatId
+      // 'extract'：网站没有独立音频流，下载最佳（音画合一）文件后由 -x 提取音频
+      formatSelector = options.formatId === 'extract' ? 'bestaudio/best' : `${options.formatId}/bestaudio/best`
     } else {
       if (options.audioTrack && options.audioTrack.isM3u8) {
         formatSelector = options.audioTrack.formatId
@@ -2416,8 +2633,10 @@ ipcMain.handle('ytdlp:download', async (_event, options: {
         const browser = getAvailableBrowser()
         if (browser) args.push('--cookies-from-browser', browser)
       }
+      // B站 CDN 对不带 Range 头的请求返回 HTTP 567，分块下载会让 yt-dlp 每次都带 Range
+      args.push('--http-chunk-size', '10M')
     }
-    
+
     args.push(options.url)
     
     // 设置工作目录为 yt-dlp 所在目录
@@ -2487,16 +2706,16 @@ ipcMain.handle('ytdlp:download', async (_event, options: {
       if (destMatch) {
         const rawPath = destMatch[1].trim()
         // 转换为绝对路径并规范化
-        downloadedFile = path.resolve(rawPath.replace(/\//g, '\\'))
+        downloadedFile = path.resolve(IS_WIN ? rawPath.replace(/\//g, '\\') : rawPath)
       }
-      
+
       // 已存在文件
       const existsMatch = line.match(/\[download\] (.+) has already been downloaded/)
       if (existsMatch) {
         const rawPath = existsMatch[1].trim()
-        downloadedFile = path.resolve(rawPath.replace(/\//g, '\\'))
+        downloadedFile = path.resolve(IS_WIN ? rawPath.replace(/\//g, '\\') : rawPath)
       }
-      
+
       // FFmpeg 合并中
       if (line.includes('[Merger]') || line.includes('Merging formats')) {
         sendDownloadProgress({
@@ -2508,11 +2727,22 @@ ipcMain.handle('ytdlp:download', async (_event, options: {
         })
       }
       
+      // 纯音频：转换后的 mp3 路径
+      const extractMatch = line.match(/\[ExtractAudio\] Destination: (.+)/)
+      if (extractMatch) {
+        const rawPath = extractMatch[1].trim()
+        downloadedFile = path.resolve(IS_WIN ? rawPath.replace(/\//g, '\\') : rawPath)
+      }
+      const extractSkipMatch = line.match(/\[ExtractAudio\] Not converting audio (.+?);/)
+      if (extractSkipMatch) {
+        downloadedFile = path.resolve(extractSkipMatch[1].trim())
+      }
+
       // 获取合并后的文件路径（Merger 输出了合并后的文件）
       const mergeMatch = line.match(/\[Merger\] Merging formats into "(.+)"/)
       if (mergeMatch) {
         const rawPath = mergeMatch[1].trim()
-        downloadedFile = path.resolve(rawPath.replace(/\//g, '\\'))
+        downloadedFile = path.resolve(IS_WIN ? rawPath.replace(/\//g, '\\') : rawPath)
       }
     })
     
@@ -2548,12 +2778,18 @@ ipcMain.handle('ytdlp:download', async (_event, options: {
       }
       
       if (code !== 0) {
+        // 纯音频失败时，删掉为提取音频而下载的中间视频文件
+        if (isAudioOnly && downloadedFile && !downloadedFile.endsWith('.mp3')) {
+          try { fs.rmSync(downloadedFile, { force: true }) } catch {}
+        }
         // 提取最后一行非空错误信息
         const errorLines = errorOutput.split('\n').filter((l: string) => l.trim())
         const lastError = errorLines.length > 0 ? errorLines[errorLines.length - 1].trim() : ''
         // 检查是否是 HTTP 429 错误
         if (lastError.includes('429') || lastError.includes('Too Many Requests')) {
           reject(new Error('YouTube 请求过于频繁，请等待几分钟后重试 (HTTP 429)'))
+        } else if (isAudioOnly && errorOutput.includes('unable to obtain file audio codec')) {
+          reject(new Error('这个视频没有声音（没有音轨），无法提取音频'))
         } else {
           reject(new Error(lastError || '下载失败'))
         }
@@ -2577,7 +2813,7 @@ ipcMain.handle('ytdlp:download', async (_event, options: {
       }
       
       // 如果没有获取到合并后的路径，手动构造 mp4 路径
-      if (downloadedFile && downloadedFile.endsWith('.m4a')) {
+      if (!isAudioOnly && downloadedFile && downloadedFile.endsWith('.m4a')) {
         downloadedFile = downloadedFile.replace(/\.m4a$/, '.mp4')
       }
       
@@ -2712,7 +2948,6 @@ ipcMain.handle('ytdlp:pauseDownload', async (_, taskId: string) => {
     }
     
     // Windows 上需要强制终止进程树
-    const { exec } = require('child_process')
     const pid = download.child.pid
     
     // 先尝试正常终止
